@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>TRACER — trace anything</title>
+  <meta name="description" content="Overlay any image on your camera and trace it onto paper." />
+
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#E4291C" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Tracer" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ======================= HOME ======================= -->
+<main id="home" class="screen screen--home" aria-label="Tracer home">
+
+  <!-- top marching-stripe rail -->
+  <div class="rail rail--top" aria-hidden="true">
+    <div class="rail__stripes"></div>
+    <span class="rail__tag">DM—12</span>
+    <span class="rail__ja rail__ja--v">トレース</span>
+  </div>
+
+  <header class="home__head">
+    <div class="brandmark" aria-label="Tracer logo: three dashes">
+      <span class="dash dash--1"></span>
+      <span class="dash dash--2"></span>
+      <span class="dash dash--3"></span>
+    </div>
+    <div class="brandmark__meta">
+      <span class="brandmark__ja">トレーサー</span>
+      <span class="brandmark__code">NO.03 / RED</span>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero__kicker">
+      <span class="chip">EST. 1981</span>
+      <span class="chip chip--ghost">光 TRACE ANYTHING</span>
+    </div>
+
+    <h1 class="hero__title">
+      <span class="hero__word">TRA<span class="hero__cut">C</span>ER</span>
+    </h1>
+
+    <!-- animated speed-line slab -->
+    <div class="slab" aria-hidden="true">
+      <div class="slab__lines"></div>
+      <div class="slab__sun"></div>
+      <span class="slab__label">トレーサー ／ 一九八一</span>
+    </div>
+
+    <p class="hero__lead">
+      Pin your phone above the page. Drop any picture over the live camera,
+      fade it down, and <strong>trace straight onto paper.</strong>
+    </p>
+
+    <button id="startBtn" class="btn btn--primary btn--xl">
+      <span class="btn__label">START TRACING</span>
+      <span class="btn__ja">はじめる</span>
+      <span class="btn__arrow">→</span>
+    </button>
+
+    <!-- how it works -->
+    <ol class="steps">
+      <li class="step">
+        <span class="step__no">01</span>
+        <span class="step__body"><b>Mark the page.</b> Draw a small cross in each of the 4 corners of your drawing area.</span>
+      </li>
+      <li class="step">
+        <span class="step__no">02</span>
+        <span class="step__body"><b>Mount the phone</b> above the page, camera facing down. Pick your image.</span>
+      </li>
+      <li class="step">
+        <span class="step__no">03</span>
+        <span class="step__body"><b>Tap LOCK</b> and touch the 4 crosses. The image snaps in place. Fade &amp; trace.</span>
+      </li>
+    </ol>
+  </section>
+
+  <!-- marquee -->
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee__track">
+      <span>TRACER ✦ トレース ✦ TRACE ANYTHING ✦ 一九八一 ✦ RED NO.03 ✦ </span>
+      <span>TRACER ✦ トレース ✦ TRACE ANYTHING ✦ 一九八一 ✦ RED NO.03 ✦ </span>
+    </div>
+  </div>
+
+  <div class="rail rail--bottom" aria-hidden="true">
+    <div class="rail__stripes rail__stripes--rev"></div>
+  </div>
+</main>
+
+<!-- ======================= CAMERA ======================= -->
+<section id="cam" class="screen screen--cam" hidden aria-label="Tracing view">
+
+  <video id="video" class="cam__video" playsinline muted autoplay></video>
+
+  <!-- overlay image lives here -->
+  <div id="overlayStage" class="overlay-stage">
+    <img id="overlayImg" class="overlay-img" alt="" draggable="false" />
+  </div>
+
+  <!-- scan line -->
+  <div class="scanline" aria-hidden="true"></div>
+
+  <!-- 4-corner align guide -->
+  <div id="alignLayer" class="align-layer" hidden>
+    <svg id="alignSvg" class="align-svg" aria-hidden="true"></svg>
+    <div class="align-reticle">
+      <div class="reticle"></div>
+    </div>
+    <div class="align-hud">
+      <span class="align-hud__step" id="alignStep">1 / 4</span>
+      <span class="align-hud__label" id="alignLabel">Tap the TOP-LEFT cross</span>
+      <button id="alignUndo" class="pill pill--ghost">UNDO</button>
+      <button id="alignCancel" class="pill pill--ghost">CANCEL</button>
+    </div>
+  </div>
+
+  <!-- top bar -->
+  <div class="cam__top">
+    <div class="brandmark brandmark--sm" aria-hidden="true">
+      <span class="dash dash--1"></span><span class="dash dash--2"></span><span class="dash dash--3"></span>
+    </div>
+    <span id="camStatus" class="cam__status">NO IMAGE</span>
+    <button id="closeCam" class="icon-btn" aria-label="Back to home">✕</button>
+  </div>
+
+  <!-- empty state -->
+  <div id="emptyState" class="empty">
+    <div class="empty__card">
+      <div class="brandmark brandmark--lg"><span class="dash dash--1"></span><span class="dash dash--2"></span><span class="dash dash--3"></span></div>
+      <p class="empty__text">Pick an image from your camera roll to start tracing.</p>
+      <button id="pickFirst" class="btn btn--primary">CHOOSE IMAGE 写真</button>
+    </div>
+  </div>
+
+  <!-- control dock -->
+  <div class="dock">
+    <div class="dock__row dock__row--slider">
+      <span class="dock__ja">透明度</span>
+      <input id="opacity" class="slider" type="range" min="0" max="100" value="55" aria-label="Image opacity" />
+      <span id="opacityVal" class="dock__val">55%</span>
+    </div>
+    <div class="dock__row dock__row--btns">
+      <button id="btnPick"  class="tool"><span class="tool__ic">▣</span><span class="tool__t">IMAGE</span></button>
+      <button id="btnLock"  class="tool tool--accent"><span class="tool__ic">✛</span><span class="tool__t">LOCK</span></button>
+      <button id="btnFlip"  class="tool"><span class="tool__ic">⇄</span><span class="tool__t">FLIP</span></button>
+      <button id="btnTorch" class="tool"><span class="tool__ic">☀</span><span class="tool__t">TORCH</span></button>
+      <button id="btnReset" class="tool"><span class="tool__ic">↺</span><span class="tool__t">RESET</span></button>
+    </div>
+  </div>
+
+  <input id="fileInput" type="file" accept="image/*" hidden />
+</section>
+
+<!-- toast -->
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
