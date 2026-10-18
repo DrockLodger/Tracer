@@ -67,6 +67,7 @@
   }
 
   function closeCam() {
+    if (Track.running) Track.stop(false);
     stopCamera();
     cam.hidden = true;
     home.hidden = false;
@@ -112,12 +113,14 @@
     if (!file) return;
     const url = URL.createObjectURL(file);
     img.onload = () => {
+      if (Track.running) Track.stop(false);
       natW = img.naturalWidth;
       natH = img.naturalHeight;
       hasImage = true;
       flipped = false;
       locked = false;
       lockPts = [];
+      baseH = null;
       img.style.display = 'block';
       emptyState.hidden = true;
       stage.style.pointerEvents = 'auto';
@@ -133,6 +136,7 @@
 
   function setStatus() {
     if (!hasImage) { camStatus.textContent = 'NO IMAGE'; return; }
+    if (Track.running) { camStatus.textContent = 'TRACKING'; return; }
     camStatus.textContent = locked ? 'LOCKED' : 'FREE';
   }
 
@@ -222,14 +226,17 @@
   $('btnFlip').addEventListener('click', () => {
     if (!hasImage) return toast('Pick an image first.');
     flipped = !flipped;
-    applyTransform();
+    if (Track.running) { baseH = computeBaseH(); Track.apply(); }
+    else applyTransform();
     $('btnFlip').classList.toggle('is-on', flipped);
   });
 
   $('btnReset').addEventListener('click', () => {
     if (!hasImage) return;
+    if (Track.running) Track.stop(false);
     locked = false;
     lockPts = [];
+    baseH = null;
     flipped = false;
     $('btnFlip').classList.remove('is-on');
     $('btnLock').classList.remove('is-on');
@@ -267,6 +274,7 @@
 
   function startAlign() {
     if (!hasImage) return toast('Pick an image first.');
+    if (Track.running) Track.stop(false);
     lockPts = [];
     locked = false;
     alignLayer.hidden = false;
@@ -338,23 +346,28 @@
   }
 
   // ---- homography: map image rect -> tapped quad (clockwise) ----
-  function applyHomography() {
+  // baseH: normalised 3x3 (row-major) mapping overlay px -> CSS px at lock frame
+  let baseH = null;
+
+  function computeBaseH() {
     const W = natW, H = natH;
     // source corners clockwise; flip swaps left/right edges
     const s = flipped
       ? [W, 0, 0, 0, 0, H, W, H]   // TR,TL,BL,BR
       : [0, 0, W, 0, W, H, 0, H];  // TL,TR,BR,BL
-    const d = [
-      lockPts[0].x, lockPts[0].y,
-      lockPts[1].x, lockPts[1].y,
-      lockPts[2].x, lockPts[2].y,
-      lockPts[3].x, lockPts[3].y
-    ];
     const t = general2DProjection(
       s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-      d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
+      lockPts[0].x, lockPts[0].y, lockPts[1].x, lockPts[1].y,
+      lockPts[2].x, lockPts[2].y, lockPts[3].x, lockPts[3].y
     );
     for (let i = 0; i < 9; i++) t[i] = t[i] / t[8];
+    return t;
+  }
+
+  // apply a row-major 3x3 homography (overlay px -> CSS px) as a CSS matrix3d
+  function applyMat3(h) {
+    const k = h[8] || 1;
+    const t = h.map((v) => v / k);
     const m = [
       t[0], t[3], 0, t[6],
       t[1], t[4], 0, t[7],
@@ -363,6 +376,11 @@
     ];
     img.style.transformOrigin = '0 0';
     img.style.transform = 'matrix3d(' + m.join(',') + ')';
+  }
+
+  function applyHomography() {
+    baseH = computeBaseH();
+    applyMat3(baseH);
   }
 
   // ---- projective math ----
@@ -402,9 +420,249 @@
     return mmul(d, adj(s));
   }
 
+  // =========================================================
+  // LIVE TRACK — optical-flow plane tracking (OpenCV.js)
+  // Locks the overlay to the paper so it survives the phone moving.
+  // =========================================================
+  const trackHud     = $('trackHud');
+  const trackHudText = $('trackHudText');
+  const procCanvas   = $('procCanvas');
+  const cvLoader     = $('cvLoader');
+  const cvLoaderText = $('cvLoaderText');
+  const pctx = procCanvas.getContext('2d', { willReadFrequently: true });
+
+  const Track = {
+    running: false,
+    cvReady: false,
+    loading: false,
+    raf: 0,
+    prevGray: null,
+    prevPts: [],      // feature points in proc-canvas pixel coords [x0,y0,x1,y1,...]
+    C: [1, 0, 0, 0, 1, 0, 0, 0, 1],   // row-major cumulative page homography (CSS->CSS)
+    map: { k: 1, offX: 0, offY: 0 },
+    procW: 0, procH: 0,
+    winSize: null, crit: null,
+    lost: 0, frame: 0,
+
+    // tuning
+    MAX_PTS: 260, QUALITY: 0.01, LOST_LIMIT: 14,
+    RESEED_MIN: 45, RESEED_EVERY: 18, WEAK: 28, MIN_MATCH: 6,
+
+    async toggle() {
+      if (this.running) { this.stop(true); return; }
+      if (!hasImage) return toast('Pick an image first.');
+      if (!locked || lockPts.length !== 4) {
+        return toast('Lock onto the 4 crosses first (tap LOCK).');
+      }
+      try {
+        await this.ensureCv();
+      } catch (e) {
+        console.error(e);
+        return toast('Could not load the tracker. Check your connection.');
+      }
+      this.begin();
+    },
+
+    ensureCv() {
+      if (this.cvReady) return Promise.resolve();
+      cvLoader.hidden = false;
+      cvLoaderText.innerHTML = 'Loading tracker… (first time only, ~10&nbsp;MB)';
+      this.loading = true;
+      return new Promise((resolve, reject) => {
+        const ready = () => {
+          const cv = window.cv;
+          if (cv && cv.Mat && typeof cv.calcOpticalFlowPyrLK === 'function'
+                 && typeof cv.findHomography === 'function') {
+            this.cvReady = true; this.loading = false;
+            cvLoader.hidden = true;
+            resolve();
+            return true;
+          }
+          return false;
+        };
+        if (ready()) return;
+        if (!document.getElementById('cvScript')) {
+          const s = document.createElement('script');
+          s.id = 'cvScript';
+          s.src = 'vendor/opencv.js';
+          s.async = true;
+          s.onerror = () => { this.loading = false; cvLoader.hidden = true; reject(new Error('load failed')); };
+          document.head.appendChild(s);
+        }
+        let waited = 0;
+        const iv = setInterval(() => {
+          if (ready()) { clearInterval(iv); return; }
+          waited += 150;
+          if (waited > 30000) { clearInterval(iv); this.loading = false; cvLoader.hidden = true; reject(new Error('timeout')); }
+        }, 150);
+      });
+    },
+
+    computeMap() {
+      const vW = video.videoWidth, vH = video.videoHeight;
+      const sW = window.innerWidth, sH = window.innerHeight;
+      if (!vW || !vH) return false;
+      const cover = Math.max(sW / vW, sH / vH);
+      const ds = Math.min(1, 480 / Math.max(vW, vH));
+      this.procW = Math.max(2, Math.round(vW * ds));
+      this.procH = Math.max(2, Math.round(vH * ds));
+      procCanvas.width = this.procW;
+      procCanvas.height = this.procH;
+      this.map.k = cover / ds;
+      this.map.offX = (sW - vW * cover) / 2;
+      this.map.offY = (sH - vH * cover) / 2;
+      return true;
+    },
+
+    grabGray() {
+      const cv = window.cv;
+      pctx.drawImage(video, 0, 0, this.procW, this.procH);
+      const id = pctx.getImageData(0, 0, this.procW, this.procH);
+      const rgba = cv.matFromImageData(id);
+      const gray = new cv.Mat();
+      cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+      rgba.delete();
+      return gray;
+    },
+
+    detect(gray) {
+      const cv = window.cv;
+      const corners = new cv.Mat();
+      const minDist = Math.max(6, Math.round(this.procW / 60));
+      cv.goodFeaturesToTrack(gray, corners, this.MAX_PTS, this.QUALITY, minDist);
+      const out = [];
+      for (let i = 0; i < corners.rows; i++) {
+        out.push(corners.data32F[i * 2], corners.data32F[i * 2 + 1]);
+      }
+      corners.delete();
+      return out;
+    },
+
+    begin() {
+      const cv = window.cv;
+      if (!this.computeMap()) return toast('Camera not ready yet.');
+      this.winSize = new cv.Size(21, 21);
+      this.crit = new cv.TermCriteria(cv.TermCriteria_COUNT | cv.TermCriteria_EPS, 24, 0.01);
+      this.C = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      this.lost = 0; this.frame = 0;
+      if (this.prevGray) { this.prevGray.delete(); this.prevGray = null; }
+      this.prevGray = this.grabGray();
+      this.prevPts = this.detect(this.prevGray);
+      if (!baseH) baseH = computeBaseH();
+      this.running = true;
+      stage.style.pointerEvents = 'none';
+      $('btnTrack').classList.add('is-on');
+      trackHud.hidden = false;
+      setStatus();
+      this.loop();
+    },
+
+    apply() {
+      // overlay px -> current CSS  =  C · baseH
+      applyMat3(mmul(this.C, baseH));
+    },
+
+    loop() {
+      this.raf = requestAnimationFrame(() => this.step());
+    },
+
+    step() {
+      if (!this.running) return;
+      const cv = window.cv;
+      if (!video.videoWidth) { this.loop(); return; }
+
+      const curr = this.grabGray();
+      const n = this.prevPts.length / 2;
+
+      if (n >= this.MIN_MATCH) {
+        const prevMat = cv.matFromArray(n, 1, cv.CV_32FC2, this.prevPts);
+        const nextMat = new cv.Mat(), st = new cv.Mat(), er = new cv.Mat();
+        cv.calcOpticalFlowPyrLK(this.prevGray, curr, prevMat, nextMat, st, er, this.winSize, 2, this.crit);
+
+        const { k, offX, offY } = this.map;
+        const aCss = [], bCss = [], nextProc = [];
+        for (let i = 0; i < n; i++) {
+          if (st.data[i] !== 1) continue;
+          const nx = nextMat.data32F[i * 2], ny = nextMat.data32F[i * 2 + 1];
+          if (nx < 0 || ny < 0 || nx > this.procW || ny > this.procH) continue;
+          const px = this.prevPts[i * 2], py = this.prevPts[i * 2 + 1];
+          aCss.push(offX + px * k, offY + py * k);
+          bCss.push(offX + nx * k, offY + ny * k);
+          nextProc.push(nx, ny);
+        }
+        const g = aCss.length / 2;
+
+        if (g >= this.MIN_MATCH) {
+          const A = cv.matFromArray(g, 1, cv.CV_32FC2, aCss);
+          const B = cv.matFromArray(g, 1, cv.CV_32FC2, bCss);
+          const Hm = cv.findHomography(A, B, cv.RANSAC, 3);
+          if (Hm.rows === 3) {
+            const hinc = [];
+            for (let j = 0; j < 9; j++) hinc.push(Hm.data64F[j]);
+            let c = mmul(hinc, this.C);
+            const kk = c[8] || 1;
+            this.C = c.map((v) => v / kk);
+            this.apply();
+            this.lost = 0;
+            this.setWeak(g < this.WEAK);
+          } else {
+            this.lost++;
+          }
+          A.delete(); B.delete(); Hm.delete();
+        } else {
+          this.lost++;
+        }
+        this.prevPts = nextProc;
+        prevMat.delete(); nextMat.delete(); st.delete(); er.delete();
+      } else {
+        this.lost++;
+      }
+
+      // replenish features
+      this.frame++;
+      if (this.prevPts.length / 2 < this.RESEED_MIN || this.frame % this.RESEED_EVERY === 0) {
+        const f = this.detect(curr);
+        if (f.length >= this.prevPts.length) this.prevPts = f;
+      }
+
+      this.prevGray.delete();
+      this.prevGray = curr;
+
+      if (this.lost > this.LOST_LIMIT) { this.onLost(); return; }
+      this.loop();
+    },
+
+    setWeak(weak) {
+      trackHud.classList.toggle('is-weak', weak);
+      trackHudText.textContent = weak ? 'LOW DETAIL' : 'TRACKING';
+    },
+
+    onLost() {
+      this.stop(true);
+      toast('Lost the page — pull back so all 4 crosses show, then tap LOCK again.');
+    },
+
+    stop(keepPosition) {
+      cancelAnimationFrame(this.raf);
+      this.running = false;
+      $('btnTrack').classList.remove('is-on');
+      trackHud.hidden = true;
+      trackHud.classList.remove('is-weak');
+      if (this.prevGray) { this.prevGray.delete(); this.prevGray = null; }
+      // cv.Size / cv.TermCriteria are value objects, not Mats — no .delete()
+      this.winSize = null;
+      this.crit = null;
+      this.prevPts = [];
+      if (keepPosition && locked && baseH) applyMat3(mmul(this.C, baseH));
+      setStatus();
+    }
+  };
+
+  $('btnTrack').addEventListener('click', () => Track.toggle());
+
   // keep free-mode fit sensible on rotation / resize
   window.addEventListener('resize', () => {
-    if (hasImage && !locked) { /* keep current placement; nothing forced */ }
+    if (Track.running) Track.computeMap();
   });
 
   // =========================================================

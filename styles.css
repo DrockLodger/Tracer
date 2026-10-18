@@ -301,12 +301,39 @@ img{ -webkit-user-drag:none; user-select:none; }
   max-width:84vw; text-align:center;
 }
 
+/* ---------- live tracking HUD ---------- */
+.track-hud{
+  position:absolute; z-index:14; left:50%; transform:translateX(-50%);
+  top:calc(8px + var(--safe-t));
+  display:flex; align-items:center; gap:8px;
+  background:rgba(11,11,11,.72); border:1.5px solid var(--red);
+  border-radius:99px; padding:5px 13px 5px 11px;
+}
+.track-hud__dot{ width:10px; height:10px; border-radius:50%; background:var(--red);
+  box-shadow:0 0 0 0 rgba(228,41,28,.7); animation:ping 1.2s ease-out infinite; }
+@keyframes ping{ 0%{ box-shadow:0 0 0 0 rgba(228,41,28,.6);} 100%{ box-shadow:0 0 0 12px rgba(228,41,28,0);} }
+.track-hud__text{ font-family:var(--font-disp); font-size:13px; letter-spacing:1px; color:var(--paper); }
+.track-hud.is-weak{ border-color:var(--red-pale); }
+.track-hud.is-weak .track-hud__dot{ background:var(--red-pale); }
+
+/* ---------- OpenCV loader ---------- */
+.cv-loader{ position:absolute; inset:0; z-index:30; display:grid; place-items:center;
+  background:rgba(11,11,11,.82); padding:24px; }
+.cv-loader__card{ background:var(--paper); border:2.5px solid var(--ink); box-shadow:8px 8px 0 var(--red);
+  border-radius:var(--r); padding:26px 24px; text-align:center; max-width:320px; width:100%; }
+.cv-loader__bar{ height:12px; background:var(--paper-2); border:2px solid var(--ink);
+  border-radius:99px; overflow:hidden; margin:4px 0 14px; }
+.cv-loader__fill{ height:100%; width:38%; background:var(--red); border-radius:99px;
+  animation:loaderSlide 1.2s ease-in-out infinite; }
+@keyframes loaderSlide{ 0%{ margin-left:-40%; } 100%{ margin-left:100%; } }
+.cv-loader__text{ font-size:14px; line-height:1.4; margin:0; }
+
 /* ============================================================
    motion-reduced
    ============================================================ */
 @media (prefers-reduced-motion: reduce){
   .rail__stripes,.slab__lines,.marquee__track,.scanline,.btn__arrow,
-  .brandmark .dash{ animation:none !important; }
+  .brandmark .dash,.track-hud__dot,.cv-loader__fill{ animation:none !important; }
 }
 
 /* small phones */

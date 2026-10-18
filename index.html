@@ -81,11 +81,11 @@
       </li>
       <li class="step">
         <span class="step__no">02</span>
-        <span class="step__body"><b>Mount the phone</b> above the page, camera facing down. Pick your image.</span>
+        <span class="step__body"><b>Line up from far.</b> Fit the whole page in view, pick your image, tap LOCK and touch the 4 crosses.</span>
       </li>
       <li class="step">
         <span class="step__no">03</span>
-        <span class="step__body"><b>Tap LOCK</b> and touch the 4 crosses. The image snaps in place. Fade &amp; trace.</span>
+        <span class="step__body"><b>Move in &amp; TRACK.</b> Tap TRACK — the image sticks to the paper, so you can move closer and trace any section. Fade with the slider.</span>
       </li>
     </ol>
   </section>
@@ -158,6 +158,7 @@
     <div class="dock__row dock__row--btns">
       <button id="btnPick"  class="tool"><span class="tool__ic">▣</span><span class="tool__t">IMAGE</span></button>
       <button id="btnLock"  class="tool tool--accent"><span class="tool__ic">✛</span><span class="tool__t">LOCK</span></button>
+      <button id="btnTrack" class="tool"><span class="tool__ic">◎</span><span class="tool__t">TRACK</span></button>
       <button id="btnFlip"  class="tool"><span class="tool__ic">⇄</span><span class="tool__t">FLIP</span></button>
       <button id="btnTorch" class="tool"><span class="tool__ic">☀</span><span class="tool__t">TORCH</span></button>
       <button id="btnReset" class="tool"><span class="tool__ic">↺</span><span class="tool__t">RESET</span></button>
@@ -165,6 +166,24 @@
   </div>
 
   <input id="fileInput" type="file" accept="image/*" hidden />
+
+  <!-- hidden processing canvas for live tracking -->
+  <canvas id="procCanvas" hidden></canvas>
+
+  <!-- tracking status chip -->
+  <div id="trackHud" class="track-hud" hidden>
+    <span class="track-hud__dot"></span>
+    <span id="trackHudText" class="track-hud__text">TRACKING</span>
+  </div>
+
+  <!-- OpenCV loader -->
+  <div id="cvLoader" class="cv-loader" hidden>
+    <div class="cv-loader__card">
+      <div class="brandmark brandmark--lg"><span class="dash dash--1"></span><span class="dash dash--2"></span><span class="dash dash--3"></span></div>
+      <div class="cv-loader__bar"><div class="cv-loader__fill"></div></div>
+      <p class="cv-loader__text" id="cvLoaderText">Loading tracker… (first time only, ~10&nbsp;MB)</p>
+    </div>
+  </div>
 </section>
 
 <!-- toast -->
