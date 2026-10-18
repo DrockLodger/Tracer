@@ -200,15 +200,6 @@ img{ -webkit-user-drag:none; user-select:none; }
   opacity:.55; display:none;
 }
 
-/* scan line */
-.scanline{
-  position:absolute; left:0; right:0; height:2px;
-  background:linear-gradient(90deg, transparent, rgba(228,41,28,.75), transparent);
-  box-shadow:0 0 12px rgba(228,41,28,.6);
-  animation:scan 3.6s ease-in-out infinite; pointer-events:none; z-index:3;
-}
-@keyframes scan{ 0%{ top:8%; } 50%{ top:92%; } 100%{ top:8%; } }
-
 /* top bar */
 .cam__top{
   position:absolute; top:0; left:0; right:0; z-index:12;
@@ -332,7 +323,7 @@ img{ -webkit-user-drag:none; user-select:none; }
    motion-reduced
    ============================================================ */
 @media (prefers-reduced-motion: reduce){
-  .rail__stripes,.slab__lines,.marquee__track,.scanline,.btn__arrow,
+  .rail__stripes,.slab__lines,.marquee__track,.btn__arrow,
   .brandmark .dash,.track-hud__dot,.cv-loader__fill{ animation:none !important; }
 }
 
