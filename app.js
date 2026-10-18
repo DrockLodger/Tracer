@@ -445,10 +445,11 @@
     lost: 0, frame: 0,
 
     // tuning
-    MAX_PTS: 260, QUALITY: 0.01, LOST_LIMIT: 20,
-    RESEED_MIN: 45, RESEED_EVERY: 18, WEAK: 28, MIN_MATCH: 8,
-    MIN_INLIERS: 10, INLIER_RATIO: 0.4,
-    MAX_SCALE_STEP: 0.25, MAX_ROT_STEP: 0.26, MAX_TRANS_FRAC: 0.3,
+    MAX_PTS: 300, QUALITY: 0.01, LOST_LIMIT: 20,
+    RESEED_MIN: 60, RESEED_EVERY: 15, WEAK: 30, MIN_MATCH: 10,
+    MIN_INLIERS: 12, INLIER_RATIO: 0.5,
+    FB_THRESH: 1.5,                                  // forward-backward flow error (proc px)
+    MAX_SCALE_STEP: 0.10, MAX_ROT_STEP: 0.14, MAX_TRANS_FRAC: 0.12,
     STILL_TRANS: 0.6, STILL_SCALE: 0.004, STILL_ROT: 0.0026,
 
     async toggle() {
@@ -581,19 +582,25 @@
         const prevMat = cv.matFromArray(n, 1, cv.CV_32FC2, this.prevPts);
         const nextMat = new cv.Mat(), st = new cv.Mat(), er = new cv.Mat();
         cv.calcOpticalFlowPyrLK(this.prevGray, curr, prevMat, nextMat, st, er, this.winSize, 2, this.crit);
+        // forward-backward: track next points back and keep only those that return
+        const backMat = new cv.Mat(), st2 = new cv.Mat(), er2 = new cv.Mat();
+        cv.calcOpticalFlowPyrLK(curr, this.prevGray, nextMat, backMat, st2, er2, this.winSize, 2, this.crit);
 
         const { k, offX, offY } = this.map;
         const aCss = [], bCss = [], nextProc = [];
         for (let i = 0; i < n; i++) {
-          if (st.data[i] !== 1) continue;
+          if (st.data[i] !== 1 || st2.data[i] !== 1) continue;
           const nx = nextMat.data32F[i * 2], ny = nextMat.data32F[i * 2 + 1];
           if (nx < 0 || ny < 0 || nx > this.procW || ny > this.procH) continue;
           const px = this.prevPts[i * 2], py = this.prevPts[i * 2 + 1];
+          const bx = backMat.data32F[i * 2], by = backMat.data32F[i * 2 + 1];
+          if (Math.hypot(bx - px, by - py) > this.FB_THRESH) continue;   // unreliable track
           aCss.push(offX + px * k, offY + py * k);
           bCss.push(offX + nx * k, offY + ny * k);
           nextProc.push(nx, ny);
         }
         const g = aCss.length / 2;
+        backMat.delete(); st2.delete(); er2.delete();
 
         if (g >= this.MIN_MATCH) {
           const A = cv.matFromArray(g, 1, cv.CV_32FC2, aCss);
