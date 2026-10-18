@@ -445,8 +445,11 @@
     lost: 0, frame: 0,
 
     // tuning
-    MAX_PTS: 260, QUALITY: 0.01, LOST_LIMIT: 14,
-    RESEED_MIN: 45, RESEED_EVERY: 18, WEAK: 28, MIN_MATCH: 6,
+    MAX_PTS: 260, QUALITY: 0.01, LOST_LIMIT: 20,
+    RESEED_MIN: 45, RESEED_EVERY: 18, WEAK: 28, MIN_MATCH: 8,
+    MIN_INLIERS: 10, INLIER_RATIO: 0.4,
+    MAX_SCALE_STEP: 0.25, MAX_ROT_STEP: 0.26, MAX_TRANS_FRAC: 0.3,
+    STILL_TRANS: 0.6, STILL_SCALE: 0.004, STILL_ROT: 0.0026,
 
     async toggle() {
       if (this.running) { this.stop(true); return; }
@@ -472,7 +475,7 @@
         const ready = () => {
           const cv = window.cv;
           if (cv && cv.Mat && typeof cv.calcOpticalFlowPyrLK === 'function'
-                 && typeof cv.findHomography === 'function') {
+                 && typeof cv.estimateAffine2D === 'function') {
             this.cvReady = true; this.loading = false;
             cvLoader.hidden = true;
             resolve();
@@ -595,20 +598,42 @@
         if (g >= this.MIN_MATCH) {
           const A = cv.matFromArray(g, 1, cv.CV_32FC2, aCss);
           const B = cv.matFromArray(g, 1, cv.CV_32FC2, bCss);
-          const Hm = cv.findHomography(A, B, cv.RANSAC, 3);
-          if (Hm.rows === 3) {
-            const hinc = [];
-            for (let j = 0; j < 9; j++) hinc.push(Hm.data64F[j]);
-            let c = mmul(hinc, this.C);
-            const kk = c[8] || 1;
-            this.C = c.map((v) => v / kk);
-            this.apply();
-            this.lost = 0;
-            this.setWeak(g < this.WEAK);
+          const inl = new cv.Mat();
+          // 6-DOF affine with RANSAC: robustly rejects moving outliers (e.g. a hand)
+          const M = cv.estimateAffine2D(A, B, inl, cv.RANSAC, 3, 2000, 0.99, 10);
+
+          if (M.rows === 2) {
+            const a = M.data64F[0], b = M.data64F[1], tx = M.data64F[2];
+            const c = M.data64F[3], d = M.data64F[4], ty = M.data64F[5];
+            // project to nearest pure similarity (rotate + uniform scale) — kills skew
+            const p = (a + d) / 2, q = (c - b) / 2;
+            const s = Math.hypot(p, q), rot = Math.atan2(q, p);
+
+            let inliers = 0;
+            for (let i = 0; i < inl.rows; i++) if (inl.data[i]) inliers++;
+
+            const diag = Math.hypot(window.innerWidth, window.innerHeight);
+            const trans = Math.hypot(tx, ty);
+            const confident = inliers >= this.MIN_INLIERS && (inliers / g) >= this.INLIER_RATIO;
+            const sane = s > (1 - this.MAX_SCALE_STEP) && s < (1 + this.MAX_SCALE_STEP)
+                       && Math.abs(rot) < this.MAX_ROT_STEP && trans < this.MAX_TRANS_FRAC * diag;
+            const still = Math.abs(s - 1) < this.STILL_SCALE
+                       && Math.abs(rot) < this.STILL_ROT && trans < this.STILL_TRANS;
+
+            if (confident && sane && !still) {
+              const inc = [p, -q, tx, q, p, ty, 0, 0, 1];
+              const cc = mmul(inc, this.C);
+              const kk = cc[8] || 1;
+              this.C = cc.map((v) => v / kk);
+              this.apply();
+            }
+            // "confident" means we can see the page — not lost even when holding still
+            if (confident) { this.lost = 0; this.setWeak(inliers < this.WEAK); }
+            else { this.lost++; this.setWeak(true); }
           } else {
             this.lost++;
           }
-          A.delete(); B.delete(); Hm.delete();
+          A.delete(); B.delete(); inl.delete(); M.delete();
         } else {
           this.lost++;
         }
