@@ -451,6 +451,8 @@
     FB_THRESH: 1.5,                                  // forward-backward flow error (proc px)
     MAX_SCALE_STEP: 0.10, MAX_ROT_STEP: 0.14, MAX_TRANS_FRAC: 0.12,
     STILL_TRANS: 0.6, STILL_SCALE: 0.004, STILL_ROT: 0.0026,
+    RELOC_EVERY: 8, RELOC_MIN: 24, SNAP_THRESH: 4,   // ORB relocalisation to the lock shot
+    orb: null, matcher: null, refKp: null, refDesc: null,
 
     async toggle() {
       if (this.running) { this.stop(true); return; }
@@ -552,6 +554,15 @@
       if (this.prevGray) { this.prevGray.delete(); this.prevGray = null; }
       this.prevGray = this.grabGray();
       this.prevPts = this.detect(this.prevGray);
+      // ORB reference of the lock shot — lets us relocalise and erase drift
+      this.disposeRef();
+      this.orb = new cv.ORB(500);
+      this.matcher = new cv.BFMatcher(cv.NORM_HAMMING, false);
+      this.refKp = new cv.KeyPointVector();
+      this.refDesc = new cv.Mat();
+      const m0 = new cv.Mat();
+      this.orb.detectAndCompute(this.prevGray, m0, this.refKp, this.refDesc);
+      m0.delete();
       if (!baseH) baseH = computeBaseH();
       this.running = true;
       stage.style.pointerEvents = 'none';
@@ -570,91 +581,96 @@
       this.raf = requestAnimationFrame(() => this.step());
     },
 
+    // optical flow fromGray->toGray on fromPts (proc coords), with forward-backward
+    // rejection. Returns matched points in CSS space + the kept proc coords in `to`.
+    flowFiltered(fromGray, toGray, fromPts) {
+      const cv = window.cv;
+      const n = fromPts.length / 2;
+      const out = { aCss: [], bCss: [], toProc: [] };
+      if (n < 2) return out;
+      const fromMat = cv.matFromArray(n, 1, cv.CV_32FC2, fromPts);
+      const toMat = new cv.Mat(), st = new cv.Mat(), er = new cv.Mat();
+      cv.calcOpticalFlowPyrLK(fromGray, toGray, fromMat, toMat, st, er, this.winSize, 2, this.crit);
+      const backMat = new cv.Mat(), st2 = new cv.Mat(), er2 = new cv.Mat();
+      cv.calcOpticalFlowPyrLK(toGray, fromGray, toMat, backMat, st2, er2, this.winSize, 2, this.crit);
+      const { k, offX, offY } = this.map;
+      for (let i = 0; i < n; i++) {
+        if (st.data[i] !== 1 || st2.data[i] !== 1) continue;
+        const nx = toMat.data32F[i * 2], ny = toMat.data32F[i * 2 + 1];
+        if (nx < 0 || ny < 0 || nx > this.procW || ny > this.procH) continue;
+        const px = fromPts[i * 2], py = fromPts[i * 2 + 1];
+        const bx = backMat.data32F[i * 2], by = backMat.data32F[i * 2 + 1];
+        if (Math.hypot(bx - px, by - py) > this.FB_THRESH) continue;
+        out.aCss.push(offX + px * k, offY + py * k);
+        out.bCss.push(offX + nx * k, offY + ny * k);
+        out.toProc.push(nx, ny);
+      }
+      fromMat.delete(); toMat.delete(); st.delete(); er.delete();
+      backMat.delete(); st2.delete(); er2.delete();
+      return out;
+    },
+
+    // robust similarity (rot+scale+translate) from CSS correspondences
+    estimateSim(aCss, bCss) {
+      const cv = window.cv;
+      const g = aCss.length / 2;
+      if (g < this.MIN_MATCH) return null;
+      const A = cv.matFromArray(g, 1, cv.CV_32FC2, aCss);
+      const B = cv.matFromArray(g, 1, cv.CV_32FC2, bCss);
+      const inl = new cv.Mat();
+      const M = cv.estimateAffine2D(A, B, inl, cv.RANSAC, 3, 2000, 0.99, 10);
+      let res = null;
+      if (M.rows === 2) {
+        const a = M.data64F[0], b = M.data64F[1], tx = M.data64F[2];
+        const c = M.data64F[3], d = M.data64F[4], ty = M.data64F[5];
+        const p = (a + d) / 2, q = (c - b) / 2;      // nearest pure similarity (no skew)
+        let inliers = 0;
+        for (let i = 0; i < inl.rows; i++) if (inl.data[i]) inliers++;
+        res = { mat: [p, -q, tx, q, p, ty, 0, 0, 1], inliers, g,
+                s: Math.hypot(p, q), rot: Math.atan2(q, p), tx, ty };
+      }
+      A.delete(); B.delete(); inl.delete(); M.delete();
+      return res;
+    },
+
     step() {
       if (!this.running) return;
-      const cv = window.cv;
       if (!video.videoWidth) { this.loop(); return; }
-
       const curr = this.grabGray();
-      const n = this.prevPts.length / 2;
 
-      if (n >= this.MIN_MATCH) {
-        const prevMat = cv.matFromArray(n, 1, cv.CV_32FC2, this.prevPts);
-        const nextMat = new cv.Mat(), st = new cv.Mat(), er = new cv.Mat();
-        cv.calcOpticalFlowPyrLK(this.prevGray, curr, prevMat, nextMat, st, er, this.winSize, 2, this.crit);
-        // forward-backward: track next points back and keep only those that return
-        const backMat = new cv.Mat(), st2 = new cv.Mat(), er2 = new cv.Mat();
-        cv.calcOpticalFlowPyrLK(curr, this.prevGray, nextMat, backMat, st2, er2, this.winSize, 2, this.crit);
-
-        const { k, offX, offY } = this.map;
-        const aCss = [], bCss = [], nextProc = [];
-        for (let i = 0; i < n; i++) {
-          if (st.data[i] !== 1 || st2.data[i] !== 1) continue;
-          const nx = nextMat.data32F[i * 2], ny = nextMat.data32F[i * 2 + 1];
-          if (nx < 0 || ny < 0 || nx > this.procW || ny > this.procH) continue;
-          const px = this.prevPts[i * 2], py = this.prevPts[i * 2 + 1];
-          const bx = backMat.data32F[i * 2], by = backMat.data32F[i * 2 + 1];
-          if (Math.hypot(bx - px, by - py) > this.FB_THRESH) continue;   // unreliable track
-          aCss.push(offX + px * k, offY + py * k);
-          bCss.push(offX + nx * k, offY + ny * k);
-          nextProc.push(nx, ny);
-        }
-        const g = aCss.length / 2;
-        backMat.delete(); st2.delete(); er2.delete();
-
-        if (g >= this.MIN_MATCH) {
-          const A = cv.matFromArray(g, 1, cv.CV_32FC2, aCss);
-          const B = cv.matFromArray(g, 1, cv.CV_32FC2, bCss);
-          const inl = new cv.Mat();
-          // 6-DOF affine with RANSAC: robustly rejects moving outliers (e.g. a hand)
-          const M = cv.estimateAffine2D(A, B, inl, cv.RANSAC, 3, 2000, 0.99, 10);
-
-          if (M.rows === 2) {
-            const a = M.data64F[0], b = M.data64F[1], tx = M.data64F[2];
-            const c = M.data64F[3], d = M.data64F[4], ty = M.data64F[5];
-            // project to nearest pure similarity (rotate + uniform scale) — kills skew
-            const p = (a + d) / 2, q = (c - b) / 2;
-            const s = Math.hypot(p, q), rot = Math.atan2(q, p);
-
-            let inliers = 0;
-            for (let i = 0; i < inl.rows; i++) if (inl.data[i]) inliers++;
-
-            const diag = Math.hypot(window.innerWidth, window.innerHeight);
-            const trans = Math.hypot(tx, ty);
-            const confident = inliers >= this.MIN_INLIERS && (inliers / g) >= this.INLIER_RATIO;
-            const sane = s > (1 - this.MAX_SCALE_STEP) && s < (1 + this.MAX_SCALE_STEP)
-                       && Math.abs(rot) < this.MAX_ROT_STEP && trans < this.MAX_TRANS_FRAC * diag;
-            const still = Math.abs(s - 1) < this.STILL_SCALE
-                       && Math.abs(rot) < this.STILL_ROT && trans < this.STILL_TRANS;
-
-            if (confident && sane && !still) {
-              const inc = [p, -q, tx, q, p, ty, 0, 0, 1];
-              const cc = mmul(inc, this.C);
-              const kk = cc[8] || 1;
-              this.C = cc.map((v) => v / kk);
-              this.apply();
-            }
-            // "confident" means we can see the page — not lost even when holding still
-            if (confident) { this.lost = 0; this.setWeak(inliers < this.WEAK); }
-            else { this.lost++; this.setWeak(true); }
-          } else {
-            this.lost++;
+      // 1) Frame-to-frame tracking every frame — smooth continuity, incl. up close.
+      if (this.prevPts.length / 2 >= this.MIN_MATCH) {
+        const f = this.flowFiltered(this.prevGray, curr, this.prevPts);
+        const est = this.estimateSim(f.aCss, f.bCss);
+        if (est) {
+          const diag = Math.hypot(window.innerWidth, window.innerHeight);
+          const trans = Math.hypot(est.tx, est.ty);
+          const confident = est.inliers >= this.MIN_INLIERS && (est.inliers / est.g) >= this.INLIER_RATIO;
+          const sane = est.s > (1 - this.MAX_SCALE_STEP) && est.s < (1 + this.MAX_SCALE_STEP)
+                     && Math.abs(est.rot) < this.MAX_ROT_STEP && trans < this.MAX_TRANS_FRAC * diag;
+          const still = Math.abs(est.s - 1) < this.STILL_SCALE
+                     && Math.abs(est.rot) < this.STILL_ROT && trans < this.STILL_TRANS;
+          if (confident && sane && !still) {
+            const cc = mmul(est.mat, this.C);
+            const kk = cc[8] || 1;
+            this.C = cc.map((v) => v / kk);
+            this.apply();
           }
-          A.delete(); B.delete(); inl.delete(); M.delete();
-        } else {
-          this.lost++;
-        }
-        this.prevPts = nextProc;
-        prevMat.delete(); nextMat.delete(); st.delete(); er.delete();
-      } else {
-        this.lost++;
-      }
+          if (confident) { this.lost = 0; this.setWeak(est.inliers < this.WEAK); }
+          else { this.lost++; this.setWeak(true); }
+        } else { this.lost++; }
+        this.prevPts = f.toProc;
+      } else { this.lost++; }
+
+      // 2) Periodically relocalise against the lock shot (ORB) to erase accumulated
+      //    drift. Works whenever enough of the original page is back in view.
+      this.frame++;
+      if (this.frame % this.RELOC_EVERY === 0) this.reloc(curr);
 
       // replenish features
-      this.frame++;
       if (this.prevPts.length / 2 < this.RESEED_MIN || this.frame % this.RESEED_EVERY === 0) {
-        const f = this.detect(curr);
-        if (f.length >= this.prevPts.length) this.prevPts = f;
+        const nf = this.detect(curr);
+        if (nf.length >= this.prevPts.length) this.prevPts = nf;
       }
 
       this.prevGray.delete();
@@ -662,6 +678,65 @@
 
       if (this.lost > this.LOST_LIMIT) { this.onLost(); return; }
       this.loop();
+    },
+
+    // ORB match current frame back to the lock shot; snap C to the absolute pose.
+    reloc(curr) {
+      const cv = window.cv;
+      if (!this.refDesc || this.refDesc.rows < 8) return;
+      const curKp = new cv.KeyPointVector();
+      const curDesc = new cv.Mat();
+      const mask = new cv.Mat();
+      this.orb.detectAndCompute(curr, mask, curKp, curDesc);
+      mask.delete();
+
+      if (curDesc.rows >= 8) {
+        const matches = new cv.DMatchVectorVector();
+        try {
+          this.matcher.knnMatch(this.refDesc, curDesc, matches, 2);
+          const { k, offX, offY } = this.map;
+          const aCss = [], bCss = [];
+          for (let i = 0; i < matches.size(); i++) {
+            const m = matches.get(i);
+            if (m.size() < 2) continue;
+            const d0 = m.get(0), d1 = m.get(1);
+            if (d0.distance < 0.75 * d1.distance) {
+              const rp = this.refKp.get(d0.queryIdx).pt;
+              const cp = curKp.get(d0.trainIdx).pt;
+              aCss.push(offX + rp.x * k, offY + rp.y * k);
+              bCss.push(offX + cp.x * k, offY + cp.y * k);
+            }
+          }
+          const est = this.estimateSim(aCss, bCss);
+          if (est && est.inliers >= this.RELOC_MIN && (est.inliers / est.g) >= this.INLIER_RATIO
+                  && est.s > 0.2 && est.s < 5) {
+            const cand = est.mat;  // lock-frame CSS -> current CSS = absolute C
+            const cx = natW / 2, cy = natH / 2;
+            const nowPt = this.project(mmul(this.C, baseH), cx, cy);
+            const newPt = this.project(mmul(cand, baseH), cx, cy);
+            if (Math.hypot(newPt[0] - nowPt[0], newPt[1] - nowPt[1]) > this.SNAP_THRESH) {
+              this.C = cand;
+              this.apply();
+            }
+            this.lost = 0;
+          }
+        } catch (e) { /* matcher can throw on empty sets */ }
+        matches.delete();
+      }
+      curKp.delete();
+      curDesc.delete();
+    },
+
+    project(h, x, y) {
+      const w = h[6] * x + h[7] * y + h[8];
+      return [(h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w];
+    },
+
+    disposeRef() {
+      if (this.refKp) { this.refKp.delete(); this.refKp = null; }
+      if (this.refDesc) { this.refDesc.delete(); this.refDesc = null; }
+      if (this.orb) { this.orb.delete(); this.orb = null; }
+      if (this.matcher) { this.matcher.delete(); this.matcher = null; }
     },
 
     setWeak(weak) {
@@ -681,6 +756,7 @@
       trackHud.hidden = true;
       trackHud.classList.remove('is-weak');
       if (this.prevGray) { this.prevGray.delete(); this.prevGray = null; }
+      this.disposeRef();
       // cv.Size / cv.TermCriteria are value objects, not Mats — no .delete()
       this.winSize = null;
       this.crit = null;
