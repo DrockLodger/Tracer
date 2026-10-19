@@ -77,15 +77,15 @@
     <ol class="steps">
       <li class="step">
         <span class="step__no">01</span>
-        <span class="step__body"><b>Mark the page.</b> Draw a small cross in each of the 4 corners of your drawing area.</span>
+        <span class="step__body"><b>Grid the page.</b> Divide your page into a grid and draw a cross at every corner (2×2 = 9 crosses).</span>
       </li>
       <li class="step">
         <span class="step__no">02</span>
-        <span class="step__body"><b>Line up from far.</b> Fit the whole page in view, pick your image, tap LOCK and touch the 4 crosses.</span>
+        <span class="step__body"><b>Set the grid, pick a section.</b> Pick your image, set COLS/ROWS to match your page, then tap the section you're tracing.</span>
       </li>
       <li class="step">
         <span class="step__no">03</span>
-        <span class="step__body"><b>Move in &amp; TRACK.</b> Tap TRACK — the image sticks to the paper, so you can move closer and trace any section. Fade with the slider.</span>
+        <span class="step__body"><b>Lock &amp; trace.</b> Prop the phone over that section, tap LOCK, touch its 4 crosses. Trace, then move to the next section.</span>
       </li>
     </ol>
   </section>
@@ -145,6 +145,25 @@
     </div>
   </div>
 
+  <div class="bottom">
+  <!-- sections panel -->
+  <div id="sections" class="sections" hidden>
+    <div class="sections__head">
+      <span class="sections__ja">分割</span>
+      <div class="stepper">
+        <button id="colMinus" class="step">−</button>
+        <span class="step__lbl">COLS <b id="colsVal">2</b></span>
+        <button id="colPlus" class="step">+</button>
+      </div>
+      <div class="stepper">
+        <button id="rowMinus" class="step">−</button>
+        <span class="step__lbl">ROWS <b id="rowsVal">2</b></span>
+        <button id="rowPlus" class="step">+</button>
+      </div>
+    </div>
+    <div id="cellGrid" class="cell-grid" aria-label="Choose the section to trace"></div>
+  </div>
+
   <!-- control dock -->
   <div class="dock">
     <div class="dock__row dock__row--slider">
@@ -155,12 +174,12 @@
     <div class="dock__row dock__row--btns">
       <button id="btnPick"  class="tool"><span class="tool__ic">▣</span><span class="tool__t">IMAGE</span></button>
       <button id="btnLock"  class="tool tool--accent"><span class="tool__ic">✛</span><span class="tool__t">LOCK</span></button>
-      <button id="btnTrack" class="tool"><span class="tool__ic">◎</span><span class="tool__t">TRACK</span></button>
       <button id="btnFlip"  class="tool"><span class="tool__ic">⇄</span><span class="tool__t">FLIP</span></button>
       <button id="btnTorch" class="tool"><span class="tool__ic">☀</span><span class="tool__t">TORCH</span></button>
       <button id="btnReset" class="tool"><span class="tool__ic">↺</span><span class="tool__t">RESET</span></button>
     </div>
   </div>
+  </div><!-- /bottom -->
 
   <input id="fileInput" type="file" accept="image/*" hidden />
 

@@ -42,6 +42,16 @@
   let lockPts = [];          // tapped dest corners (clockwise: TL,TR,BR,BL)
   const free = { cx: 0, cy: 0, scale: 1, angle: 0 };
 
+  // ---- sections ----
+  const sectionsPanel = $('sections');
+  const cellGrid = $('cellGrid');
+  const colsVal  = $('colsVal');
+  const rowsVal  = $('rowsVal');
+  const cropCanvas = document.createElement('canvas');
+  const fullImg = new Image();
+  let fullReady = false;
+  let cols = 2, rows = 2, cell = 0;
+
   // =========================================================
   // toast
   // =========================================================
@@ -112,27 +122,82 @@
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
-    img.onload = () => {
-      if (Track.running) Track.stop(false);
-      natW = img.naturalWidth;
-      natH = img.naturalHeight;
+    fullImg.onload = () => {
+      fullReady = true;
       hasImage = true;
       flipped = false;
+      $('btnFlip').classList.remove('is-on');
+      emptyState.hidden = true;
+      sectionsPanel.hidden = false;
+      stage.style.pointerEvents = 'auto';
+      colsVal.textContent = cols;
+      rowsVal.textContent = rows;
+      renderCellGrid();
+      renderCell();
+      URL.revokeObjectURL(url);
+    };
+    fullImg.onerror = () => toast('Could not load that image.');
+    fullImg.src = url;
+    fileInput.value = '';
+  });
+
+  // =========================================================
+  // sections — crop the image into a grid, trace one cell at a time
+  // =========================================================
+  function setGrid(nc, nr) {
+    cols = Math.min(5, Math.max(1, nc));
+    rows = Math.min(5, Math.max(1, nr));
+    colsVal.textContent = cols;
+    rowsVal.textContent = rows;
+    if (cell >= cols * rows) cell = 0;
+    renderCellGrid();
+    renderCell();
+  }
+
+  function renderCellGrid() {
+    cellGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    cellGrid.innerHTML = '';
+    const total = cols * rows;
+    for (let i = 0; i < total; i++) {
+      const b = document.createElement('button');
+      b.className = 'cell' + (i === cell ? ' is-active' : '');
+      b.addEventListener('click', () => {
+        cell = i;
+        [...cellGrid.children].forEach((el, j) => el.classList.toggle('is-active', j === cell));
+        renderCell();
+      });
+      cellGrid.appendChild(b);
+    }
+  }
+
+  function renderCell() {
+    if (!fullReady) return;
+    const FW = fullImg.naturalWidth, FH = fullImg.naturalHeight;
+    const cw = FW / cols, ch = FH / rows;
+    const cI = cell % cols, rI = Math.floor(cell / cols);
+    const dw = Math.max(1, Math.round(cw)), dh = Math.max(1, Math.round(ch));
+    cropCanvas.width = dw; cropCanvas.height = dh;
+    const ctx = cropCanvas.getContext('2d');
+    ctx.clearRect(0, 0, dw, dh);
+    ctx.drawImage(fullImg, cw * cI, ch * rI, cw, ch, 0, 0, dw, dh);
+    img.onload = () => {
+      natW = img.naturalWidth;
+      natH = img.naturalHeight;
       locked = false;
       lockPts = [];
       baseH = null;
       img.style.display = 'block';
-      emptyState.hidden = true;
-      stage.style.pointerEvents = 'auto';
       fitFree();
       applyTransform();
       setStatus();
-      URL.revokeObjectURL(url);
     };
-    img.onerror = () => toast('Could not load that image.');
-    img.src = url;
-    fileInput.value = '';
-  });
+    img.src = cropCanvas.toDataURL('image/png');
+  }
+
+  $('colMinus').addEventListener('click', () => setGrid(cols - 1, rows));
+  $('colPlus').addEventListener('click',  () => setGrid(cols + 1, rows));
+  $('rowMinus').addEventListener('click', () => setGrid(cols, rows - 1));
+  $('rowPlus').addEventListener('click',  () => setGrid(cols, rows + 1));
 
   function setStatus() {
     if (!hasImage) { camStatus.textContent = 'NO IMAGE'; return; }
@@ -765,8 +830,6 @@
       setStatus();
     }
   };
-
-  $('btnTrack').addEventListener('click', () => Track.toggle());
 
   // keep free-mode fit sensible on rotation / resize
   window.addEventListener('resize', () => {
